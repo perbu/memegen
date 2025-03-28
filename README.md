@@ -1,4 +1,4 @@
-# meme-gen
+# memegen
 
 A simple Go command-line utility to generate a meme by adding outlined white text to an embedded template image (
 `template.png`).
@@ -8,7 +8,7 @@ You'd typically use this together with something like pngcopy.
 ## Usage
 
 ```bash
-$ meme-gen -text 'Generate all the memes!!!'  | pngcopy
+$ memegen -text 'Generate all the memes!!!'  | pngcopy
 ```
 
 ## Font Used
@@ -26,5 +26,5 @@ This tool embeds the **Bebas Neue** font (`font.ttf`).
 ## Build
 
 ```bash
-go build -o meme-gen .
+go build -o memegen .
 ```

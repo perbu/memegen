@@ -31,8 +31,8 @@ const (
 
 // Define colors
 var (
-	fillColor    = image.White // Color for the text fill
-	outlineColor = image.Black // Color for the text outline
+	fillColor    = image.Black // Color for the text fill
+	outlineColor = image.White // Color for the text outline
 )
 
 // main handles command-line argument parsing, calls the core run function,

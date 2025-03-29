@@ -6,9 +6,8 @@ import (
 	"fmt"
 	"image"
 	"image/draw"
-	"image/png"   // Import for PNG encoding
-	_ "image/png" // Import for PNG decoding
-	"log"
+	"image/png"
+	"io"
 	"os"
 	"strings"
 
@@ -24,69 +23,87 @@ var templateImageBytes []byte
 var fontBytes []byte
 
 const (
-	dpi      = 72.0  // Screen DPI
-	fontSize = 144.0 // Font size in points (was 48.0, now tripled)
-	paddingY = 20    // Padding from the top/bottom edge
-	// --- New constant for outline ---
-	outlineThickness = 2 // Outline width in pixels
+	dpi              = 72.0  // Screen DPI
+	fontSize         = 144.0 // Font size in points
+	paddingY         = 20    // Padding from the top edge
+	outlineThickness = 2     // Outline width in pixels
 )
 
-// --- Define colors ---
+// Define colors
 var (
-	fillColor    = image.White // Or color.White
-	outlineColor = image.Black // Or color.Black
+	fillColor    = image.White // Color for the text fill
+	outlineColor = image.Black // Color for the text outline
 )
 
+// main handles command-line argument parsing, calls the core run function,
+// and manages program exit status based on errors.
 func main() {
-	// --- 1. Argument Handling ---
 	if len(os.Args) < 2 || os.Args[1] == "" {
+		// Print usage instructions to standard error
 		fmt.Fprintf(os.Stderr, "Usage: %s \"<text>\" [output.png]\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  <text>: The text to draw on the meme.\n")
-		fmt.Fprintf(os.Stderr, "  [output.png]: Optional output PNG filename. If omitted, writes to stdout.\n")
-		os.Exit(1)
+		fmt.Fprintf(os.Stderr, "  <text>: The text to draw on the image.\n")
+		fmt.Fprintf(os.Stderr, "  [output.png]: Optional output PNG filename. If omitted, writes PNG to stdout.\n")
+		os.Exit(1) // Exit with error status 1
 	}
-	memeText := strings.ToUpper(os.Args[1])
-	outputDest := os.Stdout
 
+	memeText := strings.ToUpper(os.Args[1])
+	outputFilename := ""
 	if len(os.Args) > 2 {
-		filePath := os.Args[2]
-		if !strings.HasSuffix(strings.ToLower(filePath), ".png") {
-			log.Printf("Warning: Output filename '%s' does not end with .png. Appending .png", filePath)
-			filePath += ".png"
+		outputFilename = os.Args[2]
+		// Simple check and warning for non-PNG extension
+		if !strings.HasSuffix(strings.ToLower(outputFilename), ".png") {
+			fmt.Fprintf(os.Stderr, "Warning: Output filename '%s' does not end with .png. Appending .png\n", outputFilename)
+			outputFilename += ".png"
 		}
-		outFile, err := os.Create(filePath)
+	}
+
+	// Execute the main application logic
+	err := run(memeText, outputFilename)
+	if err != nil {
+		// Print any error returned by run() to standard error
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1) // Exit with error status 1
+	}
+
+	// If writing to a file and successful, print a confirmation message
+	if outputFilename != "" {
+		fmt.Printf("Successfully generated meme to %s\n", outputFilename)
+	}
+	// If writing to stdout, no explicit success message is printed here.
+	// The PNG data will be on stdout.
+}
+
+// run encapsulates the core logic of loading resources, generating the image,
+// and writing the output. It returns an error if any step fails.
+func run(memeText, outputFilename string) error {
+	// --- 1. Determine Output Destination ---
+	var destWriter io.Writer = os.Stdout // Default to standard output
+	if outputFilename != "" {
+		outFile, err := os.Create(outputFilename)
 		if err != nil {
-			log.Fatalf("❌ Error creating output file '%s': %v", filePath, err)
+			return fmt.Errorf("creating output file '%s': %w", outputFilename, err)
 		}
-		defer outFile.Close()
-		outputDest = outFile
-		log.Printf("✅ Output will be saved to: %s", filePath)
-	} else {
-		log.Println("✅ No output filename specified. Writing PNG data to stdout.")
+		defer outFile.Close() // Ensure file is closed when function returns
+		destWriter = outFile
 	}
 
 	// --- 2. Load Template Image ---
 	imgReader := bytes.NewReader(templateImageBytes)
-	baseImg, format, err := image.Decode(imgReader) // image.Decode handles various formats including JPEG
+	baseImg, _, err := image.Decode(imgReader) // Format is not used, ignore it
 	if err != nil {
-		log.Fatalf("❌ Error decoding template image: %v", err)
-	}
-	// Check if it's JPEG and log a warning if embedding JPEG directly (can sometimes cause issues)
-	if format == "jpeg" {
-		log.Printf("🖼️ Template image loaded (format: %s). Note: Embedded JPEGs might differ slightly after decode/encode.", format)
-	} else {
-		log.Printf("🖼️ Template image loaded (format: %s)", format)
+		return fmt.Errorf("decoding template image: %w", err)
 	}
 
 	// --- 3. Load Font ---
 	ttFont, err := freetype.ParseFont(fontBytes)
 	if err != nil {
-		log.Fatalf("❌ Error parsing font: %v", err)
+		return fmt.Errorf("parsing font: %w", err)
 	}
-	log.Printf("🔤 Font loaded successfully")
 
 	// --- 4. Prepare Drawing Canvas ---
 	bounds := baseImg.Bounds()
+	// Create a new RGBA image to draw on. This ensures we have an image
+	// type that supports setting individual pixel colors.
 	rgbaImg := image.NewRGBA(bounds)
 	draw.Draw(rgbaImg, bounds, baseImg, image.Point{}, draw.Src)
 
@@ -94,92 +111,98 @@ func main() {
 	c := freetype.NewContext()
 	c.SetDPI(dpi)
 	c.SetFont(ttFont)
-	c.SetFontSize(fontSize) // Use the new larger font size
+	c.SetFontSize(fontSize)
 	c.SetClip(rgbaImg.Bounds())
 	c.SetDst(rgbaImg)
-	// SetHinting - Note: We will set the color (Src) just before drawing.
-	c.SetHinting(font.HintingFull)
+	c.SetHinting(font.HintingFull) // Improve font rendering quality
 
 	// --- 6. Calculate Text Position (Centered, near TOP) ---
-	// Measure the text width
 	textWidth, err := measureString(ttFont, fontSize, dpi, font.HintingFull, memeText)
 	if err != nil {
-		log.Fatalf("❌ Error measuring text: %v", err)
+		return fmt.Errorf("measuring text width: %w", err)
 	}
 
 	imageWidth := bounds.Dx()
-	// imageHeight := bounds.Dy() // Not directly needed for top alignment calculation
-
 	// Calculate starting X for centered text
 	startX := (imageWidth - textWidth) / 2
+	if startX < 0 {
+		startX = 0 // Prevent negative start X if text is wider than image
+	}
 
 	// Calculate starting Y (baseline position) near the TOP
-	// Baseline = top padding + approximate font height (ascender)
-	// Using fontSize as approximation for height works reasonably well.
-	// Adjust paddingY or this calculation slightly if needed for exact placement.
-	startY := paddingY + int(fontSize*dpi/72.0) // Convert fontSize points to pixel height roughly
+	// baseline = top padding + approximate font ascent
+	// Using fontSize * dpi / 72.0 provides a reasonable pixel height estimate.
+	startY := paddingY + int(c.PointToFixed(fontSize)>>6) // More accurate ascent calculation
 
 	pt := freetype.Pt(startX, startY) // Baseline point for the main text
 
 	// --- 7. Draw the Text with Outline ---
-	log.Printf("✏️ Drawing text outline...")
 
-	// Offsets for 8 directions for a smoother outline
+	// Define offsets for the 8 directions around the center for the outline
 	offsets := []image.Point{
 		{-outlineThickness, -outlineThickness}, {0, -outlineThickness}, {outlineThickness, -outlineThickness},
-		{-outlineThickness, 0} /* {0, 0} */, {outlineThickness, 0},
+		{-outlineThickness, 0} /* {0, 0} is the center, skip */, {outlineThickness, 0},
 		{-outlineThickness, outlineThickness}, {0, outlineThickness}, {outlineThickness, outlineThickness},
 	}
 
 	// Draw outline parts first
 	c.SetSrc(outlineColor) // Set color to black for outline
 	for _, offset := range offsets {
-		// Calculate the target integer coordinates for the outline point
-		targetX := startX + offset.X
-		targetY := startY + offset.Y
-		// Convert the target integer coordinates to the fixed.Point26_6 needed by DrawString
-		offsetPt := freetype.Pt(targetX, targetY)
+		offsetPt := freetype.Pt(startX+offset.X, startY+offset.Y)
 		_, err = c.DrawString(memeText, offsetPt)
 		if err != nil {
-			// Log error but continue trying to draw other parts and the main text
-			log.Printf("⚠️ Error drawing outline part at offset %v: %v", offset, err)
+			// Return error if any part of the outline fails to draw
+			return fmt.Errorf("drawing outline part at offset %v: %w", offset, err)
 		}
 	}
 
 	// Draw main text (fill) on top
-	log.Printf("✏️ Drawing text fill...")
 	c.SetSrc(fillColor)                 // Set color to white for fill
-	_, err = c.DrawString(memeText, pt) // Draw at the final position
+	_, err = c.DrawString(memeText, pt) // Draw at the final baseline position
 	if err != nil {
-		log.Fatalf("❌ Error drawing main text: %v", err) // Fail if the main text can't be drawn
+		// Return error if the main text fill fails to draw
+		return fmt.Errorf("drawing main text fill: %w", err)
 	}
-
-	log.Printf("✏️ Text '%s' drawn on image with outline", memeText)
 
 	// --- 8. Encode and Output PNG ---
-	err = png.Encode(outputDest, rgbaImg) // Always encode as PNG
+	// Use the determined destination writer (stdout or file)
+	err = png.Encode(destWriter, rgbaImg)
 	if err != nil {
-		if pe, ok := err.(*os.PathError); ok && pe.Op == "write" && pe.Path == "|1" {
-			log.Println("⚠️ Broken pipe writing to stdout (likely normal if piping).")
-		} else {
-			log.Fatalf("❌ Error encoding PNG: %v", err)
+		// Check specifically for broken pipe when writing to stdout, which can be normal
+		// if the reading end of the pipe closes early.
+		if opErr, ok := err.(*os.PathError); ok && opErr.Op == "write" && destWriter == os.Stdout {
+			// Suppress broken pipe errors when writing to stdout, but still return it
+			// as something did technically go wrong. Caller (main) ignores it if needed.
+			// Or we could return nil here if we consider broken pipe non-fatal.
+			// Let's return the error for now, main will exit non-zero.
+			return fmt.Errorf("writing PNG to stdout: %w", err)
 		}
+		// For other file write errors or general encoding errors
+		return fmt.Errorf("encoding or writing PNG: %w", err)
 	}
 
-	if outputDest != os.Stdout {
-		log.Println("🎉 Meme generated successfully!")
-	}
+	// If we reached here, all steps were successful
+	return nil
 }
 
-// Helper function to measure string width using font settings.
-// Returns width in pixels.
+// measureString calculates the width of a string in pixels when rendered
+// with the specified font properties.
 func measureString(fnt *truetype.Font, size, dpi float64, hinting font.Hinting, text string) (int, error) {
+	// Create a font face with the given options
 	face := truetype.NewFace(fnt, &truetype.Options{
 		Size:    size,
 		DPI:     dpi,
 		Hinting: hinting,
 	})
+
+	// Measure the string using the font face
+	// font.MeasureString returns width in 26.6 fixed-point units
 	widthInFixedPoint := font.MeasureString(face, text)
+
+	// Convert fixed-point to integer pixels (shift right by 6 bits)
 	widthInPixels := int(widthInFixedPoint >> 6)
+
+	// face.Close() // truetype.NewFace doesn't require explicit closing
+
 	return widthInPixels, nil
 }
